@@ -255,7 +255,9 @@ elif tab_choice == "KI-Planung":
         st.warning("Bitte analysiere zuerst Daten im Dashboard.")
 
 elif tab_choice == "Vergleich":
+
     st.subheader("📈 Vergleich zwischen zwei Programmen")
+
     col_c1, col_c2 = st.columns(2)
     with col_c1:
         program_a = st.selectbox("Programm A auswählen", AVAILABLE_SHOWS, key="comp_a")
@@ -276,29 +278,55 @@ elif tab_choice == "Vergleich":
             st.warning("Bitte Start- und Enddatum für den Vergleich auswählen.")
             st.stop()
 
+        start_date = pd.to_datetime(compare_date_range[0]).normalize()
+        end_date = pd.to_datetime(compare_date_range[1]).normalize()
+
         df_all = pd.DataFrame()
         for prog in [program_a, program_b]:
             file = f"sentiment_data_{prog.replace(' ', '_')}.csv"
             if os.path.exists(file):
                 temp = pd.read_csv(file, parse_dates=["date"])
-                temp = temp[(temp["date"] >= pd.Timestamp(compare_date_range[0])) & (temp["date"] <= pd.Timestamp(compare_date_range[1]))]
+                temp["date"] = pd.to_datetime(temp["date"]).dt.normalize()
+                temp = temp[(temp["date"] >= start_date) & (temp["date"] <= end_date)]
                 df_all = pd.concat([df_all, temp])
             else:
                 st.warning(f"Keine Daten für {prog} gefunden. Bitte zunächst im Dashboard analysieren.")
-        if not df_all.empty:
-            col1, col2 = st.columns(2)
-            with col1:
-                df_pos = df_all[df_all["sentiment"] == "positive"]
-                pos_trend = df_pos.groupby(["date", "program"]).size().reset_index(name="Anzahl")
-                fig_pos = px.line(pos_trend, x="date", y="Anzahl", color="program", title="Positive Kommentare")
-                st.plotly_chart(fig_pos, use_container_width=True)
-            with col2:
-                df_neg = df_all[df_all["sentiment"] == "negative"]
-                neg_trend = df_neg.groupby(["date", "program"]).size().reset_index(name="Anzahl")
-                fig_neg = px.line(neg_trend, x="date", y="Anzahl", color="program", title="Negative Kommentare")
-                st.plotly_chart(fig_neg, use_container_width=True)
+
+        if df_all.empty:
+            st.warning("Keine Vergleichsdaten im gewählten Zeitraum vorhanden.")
         else:
-            st.warning("Keine Vergleichsdaten vorhanden.")
+            df_all["date"] = pd.to_datetime(df_all["date"]).dt.date
+
+            # Anteil positive
+            df_grouped = df_all.groupby(["date", "program"])
+            df_ratio = df_grouped.apply(lambda x: (x["sentiment"] == "positive").sum() / len(x)).reset_index(name="Anteil Positiv")
+            df_ratio = df_ratio.sort_values("date")
+
+            fig_ratio = px.line(
+                df_ratio,
+                x="date",
+                y="Anteil Positiv",
+                color="program",
+                title="Anteil positiver Kommentare",
+            )
+            fig_ratio.update_layout(xaxis=dict(tickformat="%d.%m.%Y"))
+            fig_ratio.update_traces(line_shape="spline")
+            st.plotly_chart(fig_ratio, use_container_width=True)
+
+            # Anteil negativ
+            df_ratio_neg = df_grouped.apply(lambda x: (x["sentiment"] == "negative").sum() / len(x)).reset_index(name="Anteil Negativ")
+            df_ratio_neg = df_ratio_neg.sort_values("date")
+
+            fig_ratio_neg = px.line(
+                df_ratio_neg,
+                x="date",
+                y="Anteil Negativ",
+                color="program",
+                title="Anteil negativer Kommentare",
+            )
+            fig_ratio_neg.update_layout(xaxis=dict(tickformat="%d.%m.%Y"))
+            fig_ratio_neg.update_traces(line_shape="spline")
+            st.plotly_chart(fig_ratio_neg, use_container_width=True)
 
 elif tab_choice == "Bericht":
     st.subheader("📄 Wochenbericht")
