@@ -20,22 +20,41 @@ with st.sidebar:
 
 st.title("📺 KI-gestützte TV-Stimmungsanalyse")
 
+
 @st.cache_data
 def generate_mock_comments(program, start_date, end_date):
     dates = pd.date_range(start_date, end_date)
     data = []
-    rng = np.random.default_rng(seed=hash(program) % 2**32)  # stabile, aber unterschiedliche Ergebnisse pro Show
+    rng = np.random.default_rng(seed=hash(program) % 2**32)
+
+    # Basisstimmung je nach Programm
+    if program == "Master Chef":
+        base_probs = [0.7, 0.2, 0.1]
+    elif program == "The Voice":
+        base_probs = [0.55, 0.25, 0.2]
+    else:
+        base_probs = [0.5, 0.3, 0.2]
 
     for date in dates:
-        n_comments = rng.integers(15, 25)
-        # Basisverteilung je nach Programm (z. B. Master Chef ist positiver)
-        if program == "Master Chef":
-            probs = [0.7, 0.2, 0.1]  # positive, neutral, negative
+        weekday = date.weekday()
+        n_comments = rng.integers(20, 40)
+
+        # Wochenend-Effekt: mehr Kommentare freitags bis sonntags
+        if weekday >= 4:
+            n_comments += rng.integers(10, 20)
+
+        # Schwankung der Stimmung (leicht sinusartig)
+        mood_shift = 0.1 * np.sin(date.dayofyear / 10.0 + (0 if program == "Master Chef" else 1))
+
+        # Sonderfall: negativer Peak (z. B. Skandal)
+        if rng.random() < 0.1 and weekday == 2:  # Mittwoch = Drama
+            shock = [-0.2, 0.0, 0.2]
         else:
-            #probs = [0.5 + 0.1 * np.sin(date.dayofyear / 30), 0.3, 0.2]  # leicht variabel mit Datum
-            raw_probs = [0.5 + 0.1 * np.sin(date.dayofyear / 30), 0.3, 0.2]
-            probs = np.array(raw_probs)
-            probs = probs / probs.sum()  # normiere auf 1.0
+            shock = [0.0, 0.0, 0.0]
+
+        probs = np.array(base_probs) + np.array([mood_shift, -0.05, -mood_shift]) + shock
+        probs = np.clip(probs, 0.05, 0.9)
+        probs = probs / probs.sum()
 
         sentiments = rng.choice(["positive", "neutral", "negative"], size=n_comments, p=probs)
         for s in sentiments:
@@ -45,7 +64,9 @@ def generate_mock_comments(program, start_date, end_date):
                 "text": f"Kommentar zu {program} am {date.date()}",
                 "sentiment": s
             })
+
     return pd.DataFrame(data)
+
 
 
 def save_dataset(df, program):
@@ -56,11 +77,14 @@ def save_dataset(df, program):
     df.to_csv(filename, index=False)
 
 
-def simulate_forecast(df, program, periods=14):
-    df_filtered = df[df["program"] == program]
-    grouped = df_filtered.groupby("date").apply(
-        lambda x: (x["sentiment"] == "positive").sum() / len(x)
-    ).reset_index()
+
+
+def simulate_forecast(df: pd.DataFrame, program: str, periods: int = 14):
+    """Erstelle eine Prophet-Prognose und generiere eine umsetzbare Empfehlung."""
+    df_prog = df[df["program"] == program]
+    grouped = (
+        df_prog.groupby("date").apply(lambda x: (x["sentiment"] == "positive").mean()).reset_index()
+    )
     grouped.columns = ["ds", "y"]
 
     model = Prophet(daily_seasonality=True)
@@ -68,35 +92,62 @@ def simulate_forecast(df, program, periods=14):
     future = model.make_future_dataframe(periods=periods)
     forecast = model.predict(future)
 
-    #fig = model.plot(forecast)
-    # … vorige Zeilen unverändert …
-
-    # 1) Zukunft ab heute herausfiltern
+    # Nur Zukunft ab heute anzeigen
     start_forecast = pd.Timestamp.today().normalize()
     forecast_future = forecast[forecast["ds"] >= start_forecast]
 
-    # 2) Plot wie gehabt
+    # Plot
     fig = px.line(
-        forecast_future, x="ds", y="yhat",
+        forecast_future,
+        x="ds",
+        y="yhat",
         title="Prognose: Positiver Stimmungsanteil (nächste 14 Tage)",
-        markers=True, line_shape="spline"
+        markers=True,
+        line_shape="spline",
     )
     fig.update_traces(line_color="#A8E6A3")
     fig.update_layout(yaxis_title="Anteil positiv", xaxis_title="Datum")
 
-    # 3) Bewertung – Ø der **letzten 3** Prognosetage
-    trend = forecast_future["yhat"].tail(3).mean()
+    # --- Empfehlung ---------------------------------------------------
     base = grouped["y"].mean()
-    delta = trend - base
+    trend_14d = forecast_future["yhat"].mean()
+    trend_3d = forecast_future["yhat"].tail(3).mean()
+    delta_abs = trend_3d - base
+    delta_pp = delta_abs * 100
 
-    if delta > 0.05:
-        recommendation = "📈 Empfehlung: Positive Stimmung steigt – Promotion oder Fortsetzung empfohlen."
-    elif delta < -0.05:
-        recommendation = "📉 Empfehlung: Stimmung sinkt – Inhalte überdenken oder verändern."
+    # Neuer Bestandteil: Steigung der Trendlinie
+    slope = forecast_future["yhat"].iloc[-1] - forecast_future["yhat"].iloc[0]
+
+    def fmt(p):
+        return f"{p:.1%}"
+
+    # Visuell-logisch korrektere Klassifizierung
+    if slope > 0.01:
+        sign = "steigt"
+    elif slope < -0.01:
+        sign = "sinkt"
+    elif abs(delta_abs) < 0.01:
+        sign = "bleibt stabil"
     else:
-        recommendation = "📊 Empfehlung: Stimmung stabil – keine Maßnahmen notwendig."
+        sign = "sinkt" if delta_abs < 0 else "steigt"
+
+    text_rcmd = str
+
+    if sign == "steigt":
+        text_rcmd = "📈 Stimmung steigt – nutze das Momentum für Promotion."
+    elif sign == "sinkt":
+        text_rcmd = "📉 Stimmung sinkt – Inhalte überprüfen und anpassen."
+    else:
+        text_rcmd = "📊 Stimmung stabil – keine Maßnahmen erforderlich."
+
+    recommendation = (
+        f"**Kurzbewertung**: Die Stimmung {sign} "
+        f"(Basis: {fmt(base)}, Trend 3 Tage: {fmt(trend_3d)}, Δ ≈ {delta_pp:+.1f} pp).\n\n"
+        f"{text_rcmd}"
+    )
 
     return fig, forecast, grouped, recommendation
+
 
 AVAILABLE_SHOWS = ["Master Chef", "The Voice"]
 TODAY = datetime.date.today()
