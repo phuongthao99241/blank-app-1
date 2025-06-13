@@ -68,8 +68,24 @@ def simulate_forecast(df, program, periods=14):
     future = model.make_future_dataframe(periods=periods)
     forecast = model.predict(future)
 
-    fig = model.plot(forecast)
-    trend = forecast["yhat"].iloc[-periods:].mean()
+    #fig = model.plot(forecast)
+    # … vorige Zeilen unverändert …
+
+    # 1) Zukunft ab heute herausfiltern
+    start_forecast = pd.Timestamp.today().normalize()
+    forecast_future = forecast[forecast["ds"] >= start_forecast]
+
+    # 2) Plot wie gehabt
+    fig = px.line(
+        forecast_future, x="ds", y="yhat",
+        title="Prognose: Positiver Stimmungsanteil (nächste 14 Tage)",
+        markers=True, line_shape="spline"
+    )
+    fig.update_traces(line_color="#A8E6A3")
+    fig.update_layout(yaxis_title="Anteil positiv", xaxis_title="Datum")
+
+    # 3) Bewertung – Ø der **letzten 3** Prognosetage
+    trend = forecast_future["yhat"].tail(3).mean()
     base = grouped["y"].mean()
     delta = trend - base
 
@@ -249,7 +265,8 @@ elif tab_choice == "KI-Planung":
         df = pd.read_csv(filename, parse_dates=["date"])
         if st.button("Prognose für die nächsten 14 Tage anzeigen"):
             fig, forecast, grouped, recommendation = simulate_forecast(df, program, periods=14)
-            st.pyplot(fig)
+            st.plotly_chart(fig, use_container_width=True)
+
             st.markdown(f"**{recommendation}**")
     else:
         st.warning("Bitte analysiere zuerst Daten im Dashboard.")
@@ -327,6 +344,7 @@ elif tab_choice == "Vergleich":
             fig_ratio_neg.update_layout(xaxis=dict(tickformat="%d.%m.%Y"))
             fig_ratio_neg.update_traces(line_shape="spline")
             st.plotly_chart(fig_ratio_neg, use_container_width=True)
+
 
 elif tab_choice == "Bericht":
     st.subheader("📄 Wochenbericht")
